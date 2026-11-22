@@ -1,7 +1,7 @@
 // Agent Standup's band for Claude Code (a mod: Claude Code's function hooks). In the session you are in, a line above the prompt says when another Claude Code session
 // on this computer needs you (an approval, an answer), and a toast says when one needs you or has finished its turn. It reads only the status file each session keeps
 // in <config dir>/sessions/<pid>.json (written by Claude Code 2.1.221 and later in the terminal, 2.1.269 elsewhere; mods run from 2.1.294) and asks `ps` whether a waiting session's process still runs. Nothing is sent anywhere.
-// On the Claude desktop app, a row for a session of that app opens it, and Show all opens the app's own list of the sessions that wait for you.
+// On the Claude desktop app, a row for a session of that app opens it, and Next waiting opens the first session the app has waiting for you.
 // The whole call, with every session as a character: /agent-standup:open, from the agent-standup plugin (a separate install).
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -11,6 +11,7 @@ type Need = { id: string; where: string; what: string; host?: string }   // the 
 let needs: readonly Need[] = []
 let hidden: ReadonlySet<string> = new Set()   // the waits you put away with "Hide": the band stays away until another one comes; one that ends is forgotten, so the same session asking again shows
 const keyOf = (n: Need): string => n.id + ':' + n.what
+let expanded = false   // "and N more" pressed: every wait is listed, and the band scrolls (the engine's window) once they outgrow its rows; Fewer, or three or fewer waits, closes it
 
 type Status = { pid?: unknown; sessionId?: unknown; status?: unknown; waitingFor?: unknown; cwd?: unknown; name?: unknown; nameSource?: unknown; entrypoint?: unknown; hostSessionId?: unknown }
 
@@ -90,6 +91,7 @@ export const register: Register = on => {
       const list: Need[] = rows.filter(s => waits(s) && live.has(Number(s.pid))).map(s => ({ id: String(s.sessionId), where: whereOf(s), what: whatOf(s.waitingFor), host: hostOf(s) }))
       const keys = new Set(list.map(keyOf))
       if ([...hidden].some(k => !keys.has(k))) hidden = new Set([...hidden].filter(k => keys.has(k)))
+      if (list.length <= 3) expanded = false
       if (JSON.stringify(needs) !== JSON.stringify(list)) {
         needs = list
         $.ui.invalidate('ui.render')
@@ -123,9 +125,38 @@ export const register: Register = on => {
     const go = (url: string) => {
       if (open) $.process.run(open(url), { timeoutMs: 5000 }).catch(() => undefined)
     }
+    const shown = expanded ? list : list.slice(0, 3)
+    const controls = (
+      <Box flexDirection="row" gap={1}>
+        <Text dimColor>Agent Standup</Text>
+        {open ? <Button key="next" label="Next waiting" plain onPress={() => go('claude://code/needs-input')} /> : null}
+        {expanded ? (
+          <Button
+            key="fewer"
+            label="Fewer"
+            plain
+            onPress={() => {
+              expanded = false
+              $.ui.invalidate('ui.render')
+            }}
+          />
+        ) : null}
+        <Button
+          key="hide"
+          label="Hide"
+          plain
+          onPress={() => {
+            hidden = new Set(list.map(keyOf))
+            expanded = false
+            $.ui.invalidate('ui.render')
+          }}
+        />
+      </Box>
+    )
     return (
       <Box flexDirection="column">
-        {list.slice(0, 3).map(n => {
+        {expanded ? controls : null}
+        {shown.map(n => {
           const row = (
             <Text wrap="truncate-end">
               ✋ <Text bold>{n.where}</Text> <Text dimColor>needs {n.what}</Text>
@@ -139,20 +170,19 @@ export const register: Register = on => {
             <Box key={n.id}>{row}</Box>
           )
         })}
-        {list.length > 3 ? <Text dimColor>and {list.length - 3} more</Text> : null}
-        <Box flexDirection="row" gap={1}>
-          <Text dimColor>Agent Standup</Text>
-          {open ? <Button key="all" label="Show all" plain onPress={() => go('claude://code/needs-input')} /> : null}
+        {!expanded && list.length > 3 ? (
           <Button
-            key="hide"
-            label="Hide"
+            key="more"
             plain
             onPress={() => {
-              hidden = new Set(list.map(keyOf))
+              expanded = true
               $.ui.invalidate('ui.render')
             }}
-          />
-        </Box>
+          >
+            <Text dimColor>and {list.length - 3} more</Text>
+          </Button>
+        ) : null}
+        {expanded ? null : controls}
         {below}
       </Box>
     )
