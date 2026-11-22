@@ -5,9 +5,11 @@
 A line above your Claude Code prompt when another Claude Code session on this computer needs you:
 
     ✋ web-shop (VS Code) needs an approval
-    Agent Standup · /agent-standup:open shows them all   Hide
+    Agent Standup   Hide
 
 and a short toast when one starts waiting for you, or finishes its turn. You stay in the session you are working in, and still know when another one is stuck on a question or an approval.
+
+In the Claude desktop app on macOS or Windows, a row for another desktop-app session opens that session when you click it, and a Show all button opens the app's own list of the sessions waiting for you. Rows for terminal and VS Code sessions stay plain text.
 
 It is a mod: a plugin of Claude Code's function hooks. It draws in the terminal and in the Claude desktop app's Code tab. In VS Code, the [Agent Standup extension](https://marketplace.visualstudio.com/items?itemName=DoubleGeste.agent-standup) shows the same in its status bar.
 

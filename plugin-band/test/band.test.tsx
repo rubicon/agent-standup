@@ -168,3 +168,62 @@ test('no sessions folder (none has run yet, or a Claude Code that writes no stat
   expect(await ui.find({ type: 'Text', text: /needs/ })).toBeUndefined()
   await ui.unmount()
 })
+
+// In the Claude desktop app each session's status file names the app's own id for it (hostSessionId, local_<uuid>), and the app opens
+// claude://code/continue?session=<that id> on that session and claude://code/needs-input on its list of the sessions that wait for you.
+const DESK = 'local_0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+const deskFiles: Record<string, string> = {
+  '201.json': at({ pid: 201, sessionId: 's-desk', status: 'waiting', waitingFor: 'input needed', cwd: '/work/garden', name: 'seed catalog', nameSource: 'user', entrypoint: 'claude-desktop', hostSessionId: DESK }),
+  '202.json': at({ pid: 202, sessionId: 's-term', status: 'waiting', waitingFor: 'permission prompt', cwd: '/work/kiln', entrypoint: 'cli' }),
+  '203.json': at({ pid: 203, sessionId: 's-odd', status: 'waiting', waitingFor: 'input needed', cwd: '/work/odd', entrypoint: 'claude-desktop', hostSessionId: 'local_x; rm -rf ~' }),   // not an id the app makes: never handed to a command
+}
+const opener = (on: On, platform: string, opened: (readonly string[])[], isHosted = false) => {
+  on('session.info', () => ({ value: { platform, isHosted } }))
+  return (e: Run) => {
+    if (e.argv[0] === 'ps') return ps(e)
+    opened.push(e.argv)
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  }
+}
+
+test('on the desktop app, a row for a desktop session opens that session, and Show all opens the app\'s waiting list', async ($, on) => {
+  const opened: (readonly string[])[] = []
+  world(on, deskFiles, { id: 's-self' }, opener(on, 'macos', opened))
+  await $.session.start({ cwd: '/work/me', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'agent-standup-band', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await ui.find({ type: 'Button', key: 'open:s-desk' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'open:s-term' })).toBeUndefined()   // a terminal session: the app cannot open it
+  expect(await ui.find({ type: 'Button', key: 'open:s-odd' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /kiln/ })).toBeDefined()   // still listed, as plain text
+  expect(await ui.find({ type: 'Text', text: /\/agent-standup:open/ })).toBeUndefined()   // no command the band does not ship
+  await ui.press({ key: 'open:s-desk' })
+  await ui.press({ key: 'all' })
+  expect(opened).toEqual([['open', 'claude://code/continue?session=' + DESK], ['open', 'claude://code/needs-input']])
+  await ui.unmount()
+})
+
+test('on Windows the desktop app is reached through start', async ($, on) => {
+  const opened: (readonly string[])[] = []
+  world(on, deskFiles, { id: 's-self' }, opener(on, 'windows', opened))
+  await $.session.start({ cwd: '/work/me', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'agent-standup-band', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  await ui.press({ key: 'open:s-desk' })
+  expect(opened).toEqual([['cmd', '/c', 'start', '', 'claude://code/continue?session=' + DESK]])
+  await ui.unmount()
+})
+
+const nothingClickable = (surface: 'terminal' | 'desktop', platform: string, isHosted: boolean) => async ($: Parameters<Parameters<typeof test>[1]>[0], on: On) => {
+  const opened: (readonly string[])[] = []
+  world(on, deskFiles, { id: 's-self' }, opener(on, platform, opened, isHosted))
+  await $.session.start({ cwd: '/work/me', surface, isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'agent-standup-band', surface, component: 'AbovePrompt', props: BAND })
+  expect(await ui.find({ type: 'Text', text: /garden · seed catalog/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'open:s-desk' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'all' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /\/agent-standup:open/ })).toBeUndefined()   // no command the band does not ship, here either
+  expect(await ui.find({ type: 'Button', key: 'hide' })).toBeDefined()
+  await ui.unmount()
+}
+test('in a terminal the rows are plain text: the desktop app\'s links are for its own window', nothingClickable('terminal', 'macos', false))
+test('on a hosted server the rows are plain text: the app is not on that machine', nothingClickable('desktop', 'macos', true))
+test('on a system the band cannot open links on, the rows are plain text', nothingClickable('desktop', 'linux', false))

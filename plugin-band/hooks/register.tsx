@@ -1,17 +1,18 @@
 // Agent Standup's band for Claude Code (a mod: Claude Code's function hooks). In the session you are in, a line above the prompt says when another Claude Code session
 // on this computer needs you (an approval, an answer), and a toast says when one needs you or has finished its turn. It reads only the status file each session keeps
 // in <config dir>/sessions/<pid>.json (written by Claude Code 2.1.221 and later in the terminal, 2.1.269 elsewhere; mods run from 2.1.294) and asks `ps` whether a waiting session's process still runs. Nothing is sent anywhere.
-// The whole call, with every session as a character: /agent-standup:open (the agent-standup plugin).
+// On the Claude desktop app, a row for a session of that app opens it, and Show all opens the app's own list of the sessions that wait for you.
+// The whole call, with every session as a character: /agent-standup:open, from the agent-standup plugin (a separate install).
 import type { EngineInterface, Register } from 'claude-code'
 
 // What the band shows, kept in the module and not in $.state: $.state needs a "types" contract in plugin.json, which Claude Code before 2.1.29x refuses in a manifest.
 // A reload of the module starts them over, and the next look (every 4 s) fills them again.
-type Need = { id: string; where: string; what: string }   // the session that waits; its folder, name and app; "an approval", "an answer"
+type Need = { id: string; where: string; what: string; host?: string }   // the session that waits; its folder, name and app; "an approval", "an answer"; the desktop app's id for it
 let needs: readonly Need[] = []
 let hidden: ReadonlySet<string> = new Set()   // the waits you put away with "Hide": the band stays away until another one comes; one that ends is forgotten, so the same session asking again shows
 const keyOf = (n: Need): string => n.id + ':' + n.what
 
-type Status = { pid?: unknown; sessionId?: unknown; status?: unknown; waitingFor?: unknown; cwd?: unknown; name?: unknown; nameSource?: unknown; entrypoint?: unknown }
+type Status = { pid?: unknown; sessionId?: unknown; status?: unknown; waitingFor?: unknown; cwd?: unknown; name?: unknown; nameSource?: unknown; entrypoint?: unknown; hostSessionId?: unknown }
 
 // "web-shop · release (VS Code)": the folder, the name you gave the session (not the one Claude Code made up), the app it runs in
 export const whereOf = (s: Status): string => {
@@ -27,6 +28,15 @@ const waits = (s: Status): boolean => s.status === 'waiting' && s.waitingFor !==
 // a session a program started with claude -p (entrypoint sdk-cli): its questions go to that program, and its turns are not yours. An Agent SDK host (sdk-ts, sdk-py: Zed, a home-made app)
 // may show its menus to a person, so those are kept (as liveStatus in Agent Standup's server)
 const byProgram = (s: Status): boolean => s.entrypoint === 'sdk-cli'
+
+// The desktop app's id for one of its sessions (hostSessionId), checked against the form the app itself accepts in claude://code/continue?session=, since it goes to a command
+const HOST_ID = /^local_[A-Za-z0-9-]{1,64}$/
+export const hostOf = (s: Status): string | undefined => (s.entrypoint === 'claude-desktop' && typeof s.hostSessionId === 'string' && HOST_ID.test(s.hostSessionId) ? s.hostSessionId : undefined)
+// How this computer hands a claude:// link to the desktop app, or undefined where the band does not know (Linux, a hosted server, a Claude Code too old to say)
+type Opener = (url: string) => string[]
+let opener: Opener | undefined
+export const openerFor = (info: { platform?: unknown; isHosted?: unknown } | undefined): Opener | undefined =>
+  !info || info.isHosted ? undefined : info.platform === 'macos' ? url => ['open', url] : info.platform === 'windows' ? url => ['cmd', '/c', 'start', '', url] : undefined
 
 // The processes that still run, of those asked about. A session that crashed leaves its file behind, saying what it was doing then.
 const alive = async ($: EngineInterface, pids: readonly number[]): Promise<Set<number>> => {
@@ -44,6 +54,11 @@ const alive = async ($: EngineInterface, pids: readonly number[]): Promise<Set<n
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    try {
+      opener = openerFor(await $.session.info())
+    } catch {
+      opener = undefined   // a Claude Code that cannot say where it runs: no row is clickable
+    }
     const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || ((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '') + '/.claude'
     const dir = config.replace(/[\\/]+$/, '') + '/sessions'
     let before = new Map<string, string>()   // session id → what it was doing at the last look; nothing is announced at the first look
@@ -72,7 +87,7 @@ export const register: Register = on => {
       const live = await alive($, pids)
       if (mine < applied) return
       applied = mine
-      const list: Need[] = rows.filter(s => waits(s) && live.has(Number(s.pid))).map(s => ({ id: String(s.sessionId), where: whereOf(s), what: whatOf(s.waitingFor) }))
+      const list: Need[] = rows.filter(s => waits(s) && live.has(Number(s.pid))).map(s => ({ id: String(s.sessionId), where: whereOf(s), what: whatOf(s.waitingFor), host: hostOf(s) }))
       const keys = new Set(list.map(keyOf))
       if ([...hidden].some(k => !keys.has(k))) hidden = new Set([...hidden].filter(k => keys.has(k)))
       if (JSON.stringify(needs) !== JSON.stringify(list)) {
@@ -104,16 +119,30 @@ export const register: Register = on => {
     if (e.props.hasSurvey || !list.some(n => !hidden.has(keyOf(n)))) return next(e)
     const below = await next(e)   // what the other mods and the engine draw there stays, under the band
     const { Box, Button, Text } = $.ui.resolve(e)
+    const open = e.surface === 'desktop' ? opener : undefined   // the desktop app's links are opened from its own window only
+    const go = (url: string) => {
+      if (open) $.process.run(open(url), { timeoutMs: 5000 }).catch(() => undefined)
+    }
     return (
       <Box flexDirection="column">
-        {list.slice(0, 3).map(n => (
-          <Text key={n.id} wrap="truncate-end">
-            ✋ {n.where} <Text dimColor>needs {n.what}</Text>
-          </Text>
-        ))}
+        {list.slice(0, 3).map(n => {
+          const row = (
+            <Text wrap="truncate-end">
+              ✋ <Text bold>{n.where}</Text> <Text dimColor>needs {n.what}</Text>
+            </Text>
+          )
+          return open && n.host ? (
+            <Button key={'open:' + n.id} plain onPress={() => go('claude://code/continue?session=' + n.host)}>
+              {row}
+            </Button>
+          ) : (
+            <Box key={n.id}>{row}</Box>
+          )
+        })}
         {list.length > 3 ? <Text dimColor>and {list.length - 3} more</Text> : null}
         <Box flexDirection="row" gap={1}>
-          <Text dimColor>Agent Standup · /agent-standup:open shows them all</Text>
+          <Text dimColor>Agent Standup</Text>
+          {open ? <Button key="all" label="Show all" plain onPress={() => go('claude://code/needs-input')} /> : null}
           <Button
             key="hide"
             label="Hide"
